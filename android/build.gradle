@@ -1,0 +1,37 @@
+allprojects {
+    repositories {
+        // See settings.gradle: hand-fetched jars for flaky connections.
+        mavenLocal {
+            content { includeGroupByRegex("org\\.jetbrains\\.kotlin.*|com\\.android\\.tools.*|io\\.flutter|com\\.google\\..*|androidx\\..*") }
+        }
+        google()
+        mavenCentral()
+    }
+}
+
+// Flutter plugins pin their own (older) AGP in their buildscript. The app's
+// AGP is what actually runs, so resolve them all to it and skip downloading
+// several unused AGP versions.
+subprojects {
+    buildscript {
+        configurations.configureEach {
+            resolutionStrategy.eachDependency { details ->
+                if (details.requested.group == "com.android.tools.build" && details.requested.name == "gradle") {
+                    details.useVersion("8.5.2")
+                }
+            }
+        }
+    }
+}
+
+rootProject.buildDir = "../build"
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
