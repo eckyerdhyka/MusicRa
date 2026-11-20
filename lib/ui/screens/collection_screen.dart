@@ -86,10 +86,20 @@ class _CollectionScreenState extends ConsumerState<CollectionScreen> {
     super.dispose();
   }
 
+  /// Turns a provider value into page data, keeping the last value on screen
+  /// while the provider reloads. `whenData` drops it on reload, which swapped
+  /// the whole page for a spinner after every library write and unmounted the
+  /// header mid-action (the sync result, for one, was never shown).
+  static AsyncValue<_Data> _present<T>(AsyncValue<T> v, _Data Function(T value) build) {
+    if (v.hasValue) return AsyncData(build(v.requireValue));
+    if (v.hasError) return AsyncError(v.error!, v.stackTrace ?? StackTrace.current);
+    return const AsyncLoading();
+  }
+
   AsyncValue<_Data> _watchData() {
     switch (widget.source) {
       case RemoteCollection(:final id, :final title, :final thumbnail):
-        return ref.watch(collectionProvider(id)).whenData((p) => _Data(
+        return _present(ref.watch(collectionProvider(id)), (p) => _Data(
               title: p.title.isNotEmpty ? p.title : (title ?? ''),
               subtitle: p.author,
               cover: hiResThumb(p.thumbnail ?? thumbnail),
@@ -99,20 +109,23 @@ class _CollectionScreenState extends ConsumerState<CollectionScreen> {
             ));
       case LocalPlaylistCollection(:final id):
         final songs = ref.watch(playlistSongsProvider(id));
-        final meta = ref.watch(playlistsProvider).whenData((l) => l.where((p) => p.id == id).firstOrNull);
-        if (songs.hasError) return AsyncError(songs.error!, songs.stackTrace!);
-        if (!songs.hasValue || !meta.hasValue) return const AsyncLoading();
-        final p = meta.value;
-        return AsyncData(_Data(
-          title: p?.name ?? 'Playlist',
-          subtitle: p?.sourceId != null ? 'Diimpor dari YouTube' : 'Playlist kamu',
-          cover: p?.thumbnail,
-          covers: p?.covers ?? const [],
-          songs: songs.value!,
-          sourceId: p?.sourceId,
-        ));
+        final playlists = ref.watch(playlistsProvider);
+        if (!playlists.hasValue) {
+          return playlists.hasError
+              ? AsyncError(playlists.error!, playlists.stackTrace ?? StackTrace.current)
+              : const AsyncLoading();
+        }
+        final p = playlists.requireValue.where((p) => p.id == id).firstOrNull;
+        return _present(songs, (s) => _Data(
+              title: p?.name ?? 'Playlist',
+              subtitle: p?.sourceId != null ? 'Diimpor dari YouTube' : 'Playlist kamu',
+              cover: p?.thumbnail,
+              covers: p?.covers ?? const [],
+              songs: s,
+              sourceId: p?.sourceId,
+            ));
       case LikedCollection():
-        return ref.watch(likedSongsProvider).whenData((s) => _Data(
+        return _present(ref.watch(likedSongsProvider), (s) => _Data(
               title: 'Lagu yang Disukai',
               subtitle: 'Disimpan di perangkat ini',
               icon: Icons.favorite_rounded,
@@ -121,7 +134,7 @@ class _CollectionScreenState extends ConsumerState<CollectionScreen> {
             ));
       case DownloadsCollection():
         final bytes = ref.watch(libraryProvider.select((l) => l.downloadedBytes));
-        return ref.watch(downloadedSongsProvider).whenData((s) => _Data(
+        return _present(ref.watch(downloadedSongsProvider), (s) => _Data(
               title: 'Diunduh',
               subtitle: 'Bisa diputar tanpa internet • ${formatBytes(bytes)}',
               icon: Icons.download_rounded,
@@ -422,31 +435,72 @@ class _SaveButton extends ConsumerWidget {
   }
 }
 
-class _PlaylistMenu extends ConsumerWidget {
+class _PlaylistMenu extends ConsumerStatefulWidget {
   const _PlaylistMenu({required this.id, required this.data});
 
   final int id;
   final _Data data;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_PlaylistMenu> createState() => _PlaylistMenuState();
+}
+
+class _PlaylistMenuState extends ConsumerState<_PlaylistMenu> {
+  bool _syncing = false;
+
+  /// Pulls the YouTube playlist again and appends songs that are new.
+  Future<void> _sync() async {
+    if (_syncing) return;
+    // Everything used after the await is taken now: the user may leave the
+    // page while the playlist loads, and the sync should still finish and
+    // report back (the messenger and repositories outlive this widget).
+    final messenger = ScaffoldMessenger.of(context);
+    final yt = ref.read(youtubeProvider);
     final lib = ref.read(libraryProvider);
+    final playlistId = widget.id;
+    final sourceId = widget.data.sourceId!;
+    void snack(String text, {Duration duration = const Duration(seconds: 3)}) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text), duration: duration));
+
+    setState(() => _syncing = true);
+    snack('Menyinkronkan dari YouTube…', duration: const Duration(minutes: 2));
+    try {
+      final page = await yt.collection(sourceId);
+      if (page.songs.isEmpty) {
+        snack('Playlist di YouTube kosong, privat, atau tidak tersedia.');
+        return;
+      }
+      final added = await lib.addToPlaylist(playlistId, page.songs);
+      snack(added == 0
+          ? 'Sudah paling baru • ${page.songs.length} lagu di YouTube'
+          : '$added lagu baru ditambahkan di akhir playlist');
+    } catch (e) {
+      snack(describeError(e));
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final id = widget.id;
+    final data = widget.data;
+    final lib = ref.read(libraryProvider);
+    if (_syncing) {
+      return const IconButton(
+        tooltip: 'Menyinkronkan…',
+        onPressed: null,
+        icon: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.4)),
+      );
+    }
     return PopupMenuButton<String>(
       icon: const Icon(Icons.more_vert_rounded, color: AppColors.textMuted),
       color: AppColors.surfaceHigher,
       onSelected: (v) async {
         switch (v) {
           case 'sync':
-            showSnack(context, 'Menyinkronkan dari YouTube…');
-            try {
-              final page = await ref.read(youtubeProvider).collection(data.sourceId!);
-              final added = await lib.addToPlaylist(id, page.songs);
-              if (context.mounted) {
-                showSnack(context, added == 0 ? 'Sudah paling baru' : '$added lagu baru ditambahkan');
-              }
-            } catch (e) {
-              if (context.mounted) showSnack(context, describeError(e));
-            }
+            await _sync();
           case 'rename':
             final name = await showPlaylistNameDialog(context,
                 title: 'Ganti nama playlist', initial: data.title, action: 'Simpan');

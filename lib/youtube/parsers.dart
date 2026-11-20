@@ -456,6 +456,26 @@ List<Song> _songsFrom(List contents, {String? fallbackThumb, String? fallbackArt
   );
 }
 
+/// Browse id of the "Lirik" tab in a `next` response (`MPLYt_…`), if the
+/// song has lyrics on YouTube Music.
+String? parseLyricsBrowseId(Json json) {
+  for (final tab in findAll(json, 'tabRenderer')) {
+    final id = digStr(tab, ['endpoint', 'browseEndpoint', 'browseId']);
+    if (id != null && id.startsWith('MPLY')) return id;
+  }
+  return null;
+}
+
+/// Lyrics text and its credit ("Sumber: LyricFind") from the lyrics browse page.
+({String text, String? source})? parseLyrics(Json json) {
+  final shelf = findFirst(json, 'musicDescriptionShelfRenderer');
+  final text = runsText(dig(shelf, ['description']));
+  if (text.trim().isEmpty) return null;
+  final footer = runsText(dig(shelf, ['footer'])).trim();
+  final source = footer.replaceFirst(RegExp(r'^(Sumber|Source)\s*:\s*', caseSensitive: false), '');
+  return (text: text, source: source.isEmpty ? null : source);
+}
+
 List<String> parseSuggestions(Json json) {
   final out = <String>[];
   for (final key in ['searchSuggestionRenderer', 'historySuggestionRenderer']) {

@@ -11,6 +11,7 @@ import '../../providers.dart';
 import '../../youtube/models.dart';
 import '../widgets/artwork.dart';
 import '../widgets/song_menu.dart';
+import 'lyrics_screen.dart';
 import 'queue_sheet.dart';
 
 class PlayerScreen extends ConsumerWidget {
@@ -127,8 +128,14 @@ class PlayerScreen extends ConsumerWidget {
                   const _Controls(),
                   const SizedBox(height: 14),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      TextButton.icon(
+                        style: TextButton.styleFrom(foregroundColor: Colors.white),
+                        onPressed: () => openLyrics(context),
+                        icon: const Icon(Icons.lyrics_outlined),
+                        label: const Text('Lirik', style: TextStyle(fontWeight: FontWeight.w700)),
+                      ),
+                      const Spacer(),
                       IconButton(
                         tooltip: 'Antrean',
                         icon: const Icon(Icons.queue_music_rounded),

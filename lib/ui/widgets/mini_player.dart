@@ -66,18 +66,19 @@ class MiniPlayer extends ConsumerWidget {
                   _LikeButton(songId: item.id),
                   SizedBox(
                     width: 44,
-                    child: loading && !playing
-                        ? const Center(
-                            child: SizedBox(
+                    // Stays tappable while loading, so a stalled song can
+                    // always be started again.
+                    child: IconButton(
+                      tooltip: playing ? 'Jeda' : 'Putar',
+                      onPressed: playing ? handler.pause : handler.play,
+                      icon: loading && !playing
+                          ? const SizedBox(
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white),
-                            ),
-                          )
-                        : IconButton(
-                            icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30),
-                            onPressed: playing ? handler.pause : handler.play,
-                          ),
+                            )
+                          : Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30),
+                    ),
                   ),
                 ],
               ),

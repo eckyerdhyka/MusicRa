@@ -130,6 +130,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             if (showPlaylists)
               ...playlists.when(
+                skipLoadingOnReload: true,
                 loading: () => [const SliverToBoxAdapter(child: LoadingView())],
                 error: (e, _) => [SliverToBoxAdapter(child: ErrorView(error: e))],
                 data: (list) => [

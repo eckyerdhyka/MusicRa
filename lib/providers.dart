@@ -5,6 +5,8 @@ import 'package:palette_generator/palette_generator.dart';
 
 import 'data/library_repository.dart';
 import 'download/download_manager.dart';
+import 'lyrics/lyrics.dart';
+import 'lyrics/lyrics_repository.dart';
 import 'player/audio_handler.dart';
 import 'ui/widgets/artwork.dart';
 import 'youtube/models.dart';
@@ -15,6 +17,13 @@ final youtubeProvider = Provider<YouTubeRepository>((_) => throw UnimplementedEr
 final libraryProvider = ChangeNotifierProvider<LibraryRepository>((_) => throw UnimplementedError());
 final downloadsProvider = ChangeNotifierProvider<DownloadManager>((_) => throw UnimplementedError());
 final audioHandlerProvider = Provider<MusicRaAudioHandler>((_) => throw UnimplementedError());
+final lyricsRepositoryProvider = Provider<LyricsRepository>((_) => throw UnimplementedError());
+
+/// Lyrics of a song; the repository remembers them, so this can be dropped
+/// when nobody is looking.
+final lyricsProvider = FutureProvider.autoDispose.family<Lyrics?, Song>(
+  (ref, song) => ref.watch(lyricsRepositoryProvider).lyricsFor(song),
+);
 
 // ---- YouTube ------------------------------------------------------------------
 

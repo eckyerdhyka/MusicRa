@@ -96,6 +96,7 @@ class _AddToPlaylistSheet extends ConsumerWidget {
             ),
             Flexible(
               child: playlists.when(
+                skipLoadingOnReload: true,
                 loading: () => const LoadingView(),
                 error: (e, _) => ErrorView(error: e),
                 data: (list) => ListView(

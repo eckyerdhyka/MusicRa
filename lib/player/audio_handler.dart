@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
@@ -33,8 +34,26 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
   int? _errorHandledFor;
   int _consecutiveErrors = 0;
   bool _resolving = false;
-  bool _retriedCurrent = false;
   bool _fetchingRadio = false;
+
+  /// The native player stopped on an error and holds a dead source. just_audio
+  /// keeps reporting it as playing/buffering, so [play] and [seek] must reload
+  /// the song (from [_resumeAt]) instead of poking the dead player.
+  bool _failed = false;
+  Duration _resumeAt = Duration.zero;
+
+  /// Automatic resume attempts for the current song, see [_onFailure].
+  int _retries = 0;
+  Duration? _lastFailurePos;
+  Timer? _retryTimer;
+  static const _maxRetries = 3;
+
+  /// Wait before the first automatic resume; doubles on each further attempt.
+  @visibleForTesting
+  Duration retryDelay = const Duration(seconds: 1);
+
+  /// Pause was pressed while a song was still loading.
+  bool _pauseAfterLoad = false;
   bool _shuffle = false;
   AudioServiceRepeatMode _repeat = AudioServiceRepeatMode.none;
 
@@ -138,21 +157,45 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> play() async {
-    if (currentSong != null && _player.processingState == ProcessingState.idle && !_resolving) {
-      return _load(_index, at: _player.position, retry: true);
+    if (_resolving) {
+      // The song being loaded starts on its own once ready.
+      _pauseAfterLoad = false;
+      return;
+    }
+    if (currentSong != null && (_failed || _player.processingState == ProcessingState.idle)) {
+      // The user asked again: start with a fresh retry budget.
+      _retries = 0;
+      _lastFailurePos = null;
+      return _load(_index, at: _failed ? _resumeAt : _player.position, retry: true);
     }
     return _player.play();
   }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    if (_resolving) _pauseAfterLoad = true;
+    _retryTimer?.cancel();
+    await _player.pause();
+    _broadcast();
+  }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    if (_failed && currentSong != null && !_resolving) {
+      _retries = 0;
+      _lastFailurePos = null;
+      return _load(_index, at: position, retry: true);
+    }
+    return _player.seek(position);
+  }
 
   @override
   Future<void> stop() async {
     _loadToken++;
+    _retryTimer?.cancel();
+    // A load cut short here never clears this flag itself; left set, it made
+    // play() a no-op until the app was restarted.
+    _resolving = false;
     await _player.stop();
     _broadcast();
     await super.stop();
@@ -168,7 +211,7 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> skipToPrevious() async {
     if (_player.position > const Duration(seconds: 3) || _index <= 0) {
-      return _player.seek(Duration.zero);
+      return seek(Duration.zero);
     }
     return _load(_index - 1);
   }
@@ -198,8 +241,13 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> _load(int i, {Duration? at, bool retry = false}) async {
     if (i < 0 || i >= _songs.length) return;
     final token = ++_loadToken;
+    _retryTimer?.cancel();
     _index = i;
-    if (!retry) _retriedCurrent = false;
+    if (!retry) {
+      _retries = 0;
+      _lastFailurePos = null;
+      _pauseAfterLoad = false;
+    }
     final song = _songs[i];
     mediaItem.add(_toItem(song));
     _publishQueue();
@@ -211,7 +259,14 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
       await _player.setAudioSource(src, initialPosition: at);
       if (token != _loadToken) return;
       _resolving = false;
-      unawaited(_player.play());
+      _failed = false;
+      if (_pauseAfterLoad) {
+        _pauseAfterLoad = false;
+        await _player.pause();
+        _broadcast();
+      } else {
+        unawaited(_player.play());
+      }
       if (!retry) unawaited(_lib.recordPlay(song).catchError((_) {}));
       _prefetch(i + 1);
       if (autoplay && _repeat == AudioServiceRepeatMode.none && i >= _songs.length - 2) {
@@ -222,6 +277,12 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
       _errorHandledFor = token;
       _resolving = false;
       _yt.streams.invalidate(song.id);
+      if (retry) {
+        // Resuming mid-song (connection dropped, URL expired): keep the song
+        // and its position instead of skipping ahead.
+        await _onFailure(song, at ?? Duration.zero, wantPlay: !_pauseAfterLoad);
+        return;
+      }
       messages.add('Tidak bisa memutar "${song.title}"');
       _consecutiveErrors++;
       // Stop after a few failures in a row (e.g. offline) instead of
@@ -229,6 +290,10 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
       if (_consecutiveErrors < 3 && i + 1 < _songs.length) {
         await _load(i + 1);
       } else {
+        // Silence whatever was still playing and let play() try this song again.
+        _failed = true;
+        _resumeAt = Duration.zero;
+        await _player.pause();
         _broadcast();
       }
     }
@@ -251,16 +316,60 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
   void _onPlayerError(Object e, StackTrace st) {
     final song = currentSong;
     if (song == null || _errorHandledFor == _loadToken || _resolving) return;
-    if (!_retriedCurrent && !_lib.isDownloaded(song.id)) {
-      // Usually an expired/blocked URL: resolve a fresh one and resume.
-      _retriedCurrent = true;
-      _yt.streams.invalidate(song.id);
-      _load(_index, at: _player.position, retry: true);
+    _errorHandledFor = _loadToken;
+    _yt.streams.invalidate(song.id);
+    unawaited(_onFailure(song, _player.position, wantPlay: _player.playing));
+  }
+
+  /// The current song stopped on an error: the stream was cut off, its URL
+  /// expired, or the connection dropped. ExoPlayer then sits on a dead source
+  /// that just_audio still reports as playing/buffering, which used to leave
+  /// the song stuck with no way to start it again.
+  ///
+  /// Streams are resumed from the same spot a few times with a growing pause
+  /// (1 s, 2 s, 4 s), then the player is paused so the play button can pick it
+  /// up later. A broken downloaded file is skipped instead.
+  Future<void> _onFailure(Song song, Duration at, {required bool wantPlay}) async {
+    _failed = true;
+    _resumeAt = at;
+    if (!wantPlay) {
+      // Failed while paused: nothing to resume now, play() reloads it.
+      _broadcast();
       return;
     }
-    _errorHandledFor = _loadToken;
-    messages.add('Pemutaran "${song.title}" terhenti');
-    skipToNext();
+
+    if (_lib.isDownloaded(song.id)) {
+      messages.add('File "${song.title}" tidak bisa diputar, dilewati');
+      final before = _index;
+      await skipToNext();
+      if (_index == before) {
+        await _player.pause();
+        _broadcast();
+      }
+      return;
+    }
+
+    // Playing on since the last failure earns a fresh budget; a stream that
+    // keeps dying at the same spot does not loop forever.
+    final last = _lastFailurePos;
+    if (last == null || (at - last).abs() > const Duration(seconds: 20)) _retries = 0;
+    _lastFailurePos = at;
+
+    if (_retries < _maxRetries) {
+      _retries++;
+      final token = _loadToken;
+      _retryTimer?.cancel();
+      _retryTimer = Timer(retryDelay * (1 << (_retries - 1)), () {
+        if (token == _loadToken && _failed) _load(_index, at: at, retry: true);
+      });
+      _broadcast();
+      return;
+    }
+
+    _retryTimer?.cancel();
+    await _player.pause();
+    messages.add('Pemutaran "${song.title}" terhenti. Ketuk putar untuk melanjutkan.');
+    _broadcast();
   }
 
   Future<void> _onCompleted() async {
@@ -340,15 +449,19 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
 
   void _broadcast() {
     final playing = _player.playing;
-    final state = _resolving
+    final state = _resolving || (_retryTimer?.isActive ?? false)
         ? AudioProcessingState.loading
-        : const {
-            ProcessingState.idle: AudioProcessingState.idle,
-            ProcessingState.loading: AudioProcessingState.loading,
-            ProcessingState.buffering: AudioProcessingState.buffering,
-            ProcessingState.ready: AudioProcessingState.ready,
-            ProcessingState.completed: AudioProcessingState.completed,
-          }[_player.processingState]!;
+        : _failed
+            // Paused on a dead source: show a play button that reloads it.
+            // Not idle, which would make audio_service tear down the service.
+            ? AudioProcessingState.ready
+            : const {
+                ProcessingState.idle: AudioProcessingState.idle,
+                ProcessingState.loading: AudioProcessingState.loading,
+                ProcessingState.buffering: AudioProcessingState.buffering,
+                ProcessingState.ready: AudioProcessingState.ready,
+                ProcessingState.completed: AudioProcessingState.completed,
+              }[_player.processingState]!;
     playbackState.add(playbackState.value.copyWith(
       controls: [
         MediaControl.skipToPrevious,
@@ -364,7 +477,7 @@ class MusicRaAudioHandler extends BaseAudioHandler with SeekHandler {
       androidCompactActionIndices: const [0, 1, 2],
       processingState: state,
       playing: playing,
-      updatePosition: _player.position,
+      updatePosition: _failed ? _resumeAt : _player.position,
       bufferedPosition: _player.bufferedPosition,
       speed: _player.speed,
       queueIndex: _index < 0 ? null : _index,

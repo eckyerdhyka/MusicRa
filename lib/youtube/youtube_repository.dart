@@ -61,6 +61,8 @@ class YouTubeRepository {
     final browseId = id.startsWith('MPRE') || id.startsWith('VL') ? id : 'VL$id';
 
     CollectionPage? page;
+    Object? browseError;
+    StackTrace? browseStack;
     try {
       final first = parseCollection(await _tube.browse(browseId: browseId), browseId);
       final songs = [...first.page.songs];
@@ -80,8 +82,10 @@ class YouTubeRepository {
         songs: _dedupe(songs),
         isAlbum: first.page.isAlbum,
       );
-    } catch (_) {
+    } catch (e, st) {
       if (id.startsWith('MPRE')) rethrow;
+      browseError = e;
+      browseStack = st;
     }
     if (page != null && page.songs.isNotEmpty) return page;
     if (id.startsWith('MPRE')) return page!;
@@ -103,7 +107,16 @@ class YouTubeRepository {
     }
     // Some playlists (e.g. plain YouTube ones) are not served by the music
     // browse endpoint; youtube_explode reads them from youtube.com instead.
-    return _collectionWithExplode(playlistId, fallbackTitle: page?.title);
+    // When browse itself failed (offline, rate limited) and the fallback has
+    // nothing either, report that failure: an empty page would read as
+    // "playlist is empty" on import and "already up to date" on sync.
+    try {
+      final fallback = await _collectionWithExplode(playlistId, fallbackTitle: page?.title);
+      if (fallback.songs.isNotEmpty || browseError == null) return fallback;
+    } catch (_) {
+      if (browseError == null) rethrow;
+    }
+    Error.throwWithStackTrace(browseError, browseStack ?? StackTrace.current);
   }
 
   Future<CollectionPage> _radioCollection(String playlistId) async {
@@ -169,6 +182,14 @@ class YouTubeRepository {
   Future<List<Song>> radio(String videoId) async {
     final res = parseNext(await _tube.next(videoId: videoId, playlistId: 'RDAMVM$videoId'));
     return res.songs.where((s) => s.id != videoId).toList();
+  }
+
+  /// Unsynced lyrics YouTube Music shows in its "Lirik" tab; null when the
+  /// song has none.
+  Future<({String text, String? source})?> lyrics(String videoId) async {
+    final browseId = parseLyricsBrowseId(await _tube.next(videoId: videoId));
+    if (browseId == null) return null;
+    return parseLyrics(await _tube.browse(browseId: browseId));
   }
 
   Future<AudioStream> stream(String videoId, {bool forceRefresh = false}) =>

@@ -1,13 +1,17 @@
+import 'dart:io';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'core/theme.dart';
 import 'data/library_repository.dart';
 import 'download/download_manager.dart';
+import 'lyrics/lyrics_repository.dart';
 import 'player/audio_handler.dart';
 import 'providers.dart';
 import 'ui/shell.dart';
@@ -34,7 +38,11 @@ Future<void> main() async {
 
   final youtube = YouTubeRepository();
   final library = await LibraryRepository.open();
-  final downloads = DownloadManager(youtube, library);
+  final lyrics = LyricsRepository(
+    youtube: youtube.lyrics,
+    cacheDir: Directory('${(await getApplicationSupportDirectory()).path}/lyrics'),
+  );
+  final downloads = DownloadManager(youtube, library, lyrics: lyrics);
 
   final session = await AudioSession.instance;
   await session.configure(const AudioSessionConfiguration.music());
@@ -58,6 +66,7 @@ Future<void> main() async {
       libraryProvider.overrideWith((_) => library),
       downloadsProvider.overrideWith((_) => downloads),
       audioHandlerProvider.overrideWithValue(handler),
+      lyricsRepositoryProvider.overrideWithValue(lyrics),
     ],
     child: const MusicRaApp(),
   ));

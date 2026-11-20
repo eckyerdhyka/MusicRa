@@ -7,6 +7,7 @@ Pemutar musik Android bergaya Spotify dengan tema hijau. Semua lagu diambil dari
 - **Tetap diputar saat diminimize.** Pemutaran berjalan di foreground service (`audio_service` + `just_audio`), lengkap dengan kontrol di notifikasi, layar kunci, dan tombol headset. Musik tetap jalan saat aplikasi ditutup atau di-swipe dari recent apps.
 - **Download ke lokal.** Unduh satu lagu atau satu playlist sekaligus. Lagu diambil per potongan Range 2 MB agar tidak diperlambat YouTube, dan unduhan otomatis lanjut kalau URL kedaluwarsa. File dan covernya disimpan di penyimpanan aplikasi, jadi tetap bisa diputar tanpa internet.
 - **Tempel link playlist.** Link playlist, album, atau mix dari YouTube dan YouTube Music (`list=PL…`, `OLAK5uy_…`, `RDCLAK…`, `browse/VL…`) langsung jadi playlist di Koleksi. Link di clipboard terdeteksi otomatis. Playlist hasil impor bisa disinkronkan ulang untuk menambahkan lagu baru.
+- **Lirik.** Tombol Lirik di layar pemutar membuka lirik yang bergerak mengikuti lagu; ketuk satu baris untuk melompat ke bagian itu. Lirik tersinkron diambil dari [LRCLIB](https://lrclib.net), dengan cadangan lirik biasa dari tab Lirik YouTube Music. Lirik yang pernah dibuka dan lirik lagu yang diunduh disimpan di perangkat, jadi tetap muncul tanpa internet.
 - Beranda dari YouTube Music, pencarian dengan saran dan filter (Lagu, Video, Album, Playlist), radio atau autoplay saat antrean habis, antrean yang bisa diatur, acak dan ulangi, Lagu yang Disukai, serta riwayat putar.
 
 ## Cara kerja data YouTube
@@ -18,6 +19,7 @@ Lapisan `lib/youtube/` adalah porting Dart dari modul `innertube` di Convx:
 | Beranda, playlist, album | `browse` (`FEmusic_home`, `VL…`, `MPREb_…`) | `WEB_REMIX` |
 | Pencarian, saran | `search`, `music/get_search_suggestions` | `WEB_REMIX` |
 | Radio, autoplay, mix `RD…` | `next` | `WEB_REMIX` |
+| Lirik (cadangan) | `next` → `browse` (`MPLYt_…`) | `WEB_REMIX` |
 | URL audio | `player` | `ANDROID_VR 1.43` → `VISIONOS` → `IOS` → `ANDROID_VR 1.61`, lalu `youtube_explode_dart` sebagai cadangan |
 
 Aplikasi tidak memakai akun maupun cookie. Setiap request hanya membawa `visitorData` anonim dari `music.youtube.com/sw.js_data`. Klien stream yang terakhir berhasil akan dicoba duluan pada request berikutnya.
@@ -29,6 +31,7 @@ lib/
   youtube/   klien InnerTube, parser JSON, resolver stream, pengenal link playlist (Dart murni)
   data/      penyimpanan lokal sqflite: playlist, disukai, unduhan, riwayat
   download/  pengelola unduhan bertahap
+  lyrics/    lirik: LRCLIB, cadangan YouTube Music, parser LRC, cache di perangkat
   player/    audio handler (antrean, shuffle/repeat, autoplay, putar dari file unduhan)
   ui/        shell 3 tab, layar Beranda/Cari/Koleksi/Playlist/Player, widget bersama
 tool/smoke_youtube.dart   uji langsung ke YouTube Music

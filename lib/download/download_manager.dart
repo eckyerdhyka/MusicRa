@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/library_repository.dart';
+import '../lyrics/lyrics_repository.dart';
 import '../youtube/models.dart';
 import '../youtube/youtube_repository.dart';
 
@@ -29,7 +30,10 @@ class DownloadTask {
 /// 2 MB Range chunks (what Convx/NewPipe do). An expired or rejected URL is
 /// re-resolved and the download resumes from the last byte written.
 class DownloadManager extends ChangeNotifier {
-  DownloadManager(this._yt, this._lib);
+  DownloadManager(this._yt, this._lib, {this.lyrics});
+
+  /// Lyrics of downloaded songs are fetched right away so they show offline.
+  final LyricsRepository? lyrics;
 
   final YouTubeRepository _yt;
   final LibraryRepository _lib;
@@ -176,6 +180,7 @@ class DownloadManager extends ChangeNotifier {
       final file = await part.rename('${dir.path}/${song.id}.$ext');
       final art = await _saveArt(song, dir);
       await _lib.addDownload(song, file.path, written, artPath: art);
+      unawaited(lyrics?.lyricsFor(song).then((_) {}, onError: (_) {}));
       _tasks.remove(song.id);
       notifyListeners();
     } on _Cancelled {
